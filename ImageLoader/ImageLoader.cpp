@@ -88,7 +88,7 @@ int MountPartition(unsigned char* key) {
 
 
 
-int WriteToEEProm(unsigned char *DataBuf, int DataLen) {
+int WriteToEEProm(unsigned char* DataBuf, int DataLen) {
 
 	int rtn = 0;
 
@@ -143,7 +143,7 @@ int WriteToEEProm(unsigned char *DataBuf, int DataLen) {
 		}
 	}
 
-	
+
 	// Close the handle
 	if (qxtEepromClose(my_handle))
 	{
@@ -154,7 +154,7 @@ int WriteToEEProm(unsigned char *DataBuf, int DataLen) {
 	return rtn;
 }
 
-int ReadFromEEProm(unsigned char *DataBuf, int DataLen) {
+int ReadFromEEProm(unsigned char* DataBuf, int DataLen) {
 
 	int rtn = 0;
 
@@ -325,8 +325,8 @@ void Aes128Encrypt_Test(void) {
 		0x90,0xA0,0xB0,0xC0,0xD0,0xE0,0xF0,0x00
 	};
 
-	unsigned char iv[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-							0x08, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e};
+	unsigned char iv[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+							0x08, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e };
 
 
 	printf("Encrypting file...\n");
@@ -338,7 +338,7 @@ void Aes128Encrypt_Test(void) {
 }
 
 void Aes128Decrypt_Test(void) {
-	
+
 	unsigned char key[16] =
 	{
 		0x10,0x20,0x30,0x40,0x50,0x60,0x70,0x80,
@@ -347,7 +347,7 @@ void Aes128Decrypt_Test(void) {
 
 	unsigned char iv[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
 							0x08, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e };
-	
+
 	printf("Decrypting file...\n");
 	if (!aes_decrypt_file("encrypted.bin", "decrypted.bin", key, iv))
 		printf("Decrypt failed\n");
@@ -436,13 +436,13 @@ int aes256_decrypt_file_and_write(const char* in_file, const char* out_file,
 	FILE* fin = fopen(in_file, "rb");
 	if (!fin) return 0;
 
-	
+
 	FILE* fout = fopen(out_file, "wb");
 	if (!fout) {
 		fclose(fin);
 		return 0;
 	}
-	
+
 	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
 	if (!ctx) return 0;
 
@@ -652,7 +652,7 @@ DWORD CreatePrimary(UINT32* primaryHandle, BYTE* outPub, UINT16* outPubLen)
 
 
 int ChaCha20_enc() {
-	
+
 	int rtn = 0;
 
 	static unsigned char KEY[32] = {
@@ -823,7 +823,7 @@ int ChaCha20_dec_and_write() {
 }
 
 
-int WriteToFile(const char *filename, unsigned char *buf, int len) {
+int WriteToFile(const char* filename, unsigned char* buf, int len) {
 
 	int rtn = 0;
 
@@ -848,7 +848,7 @@ int WriteToFile(const char *filename, unsigned char *buf, int len) {
 }
 
 int ReadFromFile(const char* filename, unsigned char* buf, int len) {
-	
+
 	int rtn = 0;
 	FILE* fin = fopen(filename, "rb");
 	if (!fin) return -1;
@@ -865,7 +865,7 @@ int ReadFromFile(const char* filename, unsigned char* buf, int len) {
 }
 
 
-int TPMSetRSAKey(const char *KeyName) {
+int TPMSetRSAKey(const char* KeyName) {
 
 	int rtn = 0;
 
@@ -920,7 +920,7 @@ int TPMSetRSAKey(const char *KeyName) {
 	return rtn;
 }
 
-int TPMUseKeyEnc(const char* KeyName, BYTE *DataIn, DWORD DataInLen, BYTE *DataOut, DWORD *DataOutLen) {
+int TPMUseKeyEnc(const char* KeyName, BYTE* DataIn, DWORD DataInLen, BYTE* DataOut, DWORD* DataOutLen) {
 
 	int rtn = 0;
 
@@ -966,7 +966,7 @@ int TPMUseKeyEnc(const char* KeyName, BYTE *DataIn, DWORD DataInLen, BYTE *DataO
 		printf("Encrypt failed: 0x%X\n", status);
 		return -3;
 	}
-	
+
 	NCryptFreeObject(hKey);
 	NCryptFreeObject(hProv);
 
@@ -974,7 +974,7 @@ int TPMUseKeyEnc(const char* KeyName, BYTE *DataIn, DWORD DataInLen, BYTE *DataO
 }
 
 
-int TPMUseKeyDec(const char* KeyName, BYTE *DataIn, DWORD DataInLen, BYTE *DataOut, DWORD *DataOutLen) {
+int TPMUseKeyDec(const char* KeyName, BYTE* DataIn, DWORD DataInLen, BYTE* DataOut, DWORD* DataOutLen) {
 
 	int rtn = 0;
 
@@ -1031,7 +1031,7 @@ int TPMUseKeyDec(const char* KeyName, BYTE *DataIn, DWORD DataInLen, BYTE *DataO
 	return rtn;
 }
 
-int TPMGetPubKey(const char* KeyName, BYTE *pubKey, DWORD *pubKeySize) {
+int TPMGetPubKey(const char* KeyName, BYTE* pubKey, DWORD* pubKeySize) {
 
 	int rtn = 0;
 
@@ -1096,7 +1096,7 @@ static bool GenerateRandomBytes(BYTE* buffer, DWORD size)
 	return (status == 0);
 }
 
-int TPMChallengeResponse(BYTE *PubKey, DWORD PubKeyLen) {
+int TPMChallengeResponse(BYTE* PubKey, DWORD PubKeyLen) {
 
 	int rtn = 0;
 
@@ -1138,7 +1138,7 @@ int TPMChallengeResponse(BYTE *PubKey, DWORD PubKeyLen) {
 		printf("%02X ", challenge[i]);
 	}
 	printf("\n");
-	
+
 
 	BYTE encrypted[512];
 	DWORD encryptedSize = 0;
@@ -1158,7 +1158,7 @@ int TPMChallengeResponse(BYTE *PubKey, DWORD PubKeyLen) {
 		return -1;
 	}
 
-	
+
 	BYTE DataOut[256] = { 0x00 };
 	DWORD DataOutLen = sizeof(DataOut);;
 
@@ -1174,12 +1174,12 @@ int TPMChallengeResponse(BYTE *PubKey, DWORD PubKeyLen) {
 		}
 		printf("\n");
 	}
-	
+
 
 	return rtn;
 }
 
-int ReadRegValue(const char *RegName, const char *ValName, DWORD *Val, DWORD *ValLen) {
+int ReadRegValue(const char* RegName, const char* ValName, DWORD* Val, DWORD* ValLen) {
 
 	int rtn = 0;
 
@@ -1241,7 +1241,7 @@ uint32_t crc32(const uint8_t* data, size_t length) {
 	return ~crc;
 }
 
-void print_hex(unsigned char *buf, int len) {
+void print_hex(unsigned char* buf, int len) {
 
 	int i = 0;
 	for (i = 0; i < len; i++) {
@@ -1251,7 +1251,7 @@ void print_hex(unsigned char *buf, int len) {
 }
 
 int ReadFromKeypro() {
-	
+
 	int rtn = 0;
 	hasp_status_t status = HASP_STATUS_OK;
 
@@ -1270,17 +1270,17 @@ int ReadFromKeypro() {
 		"+vxbo4jstn/rBmgyWu51gsw21DthaTb3SYCs/fmope07EDK0pOSh/MUFqdGQN4dtbwPFFZQ991UlNYf4"
 		"eGuQiED7V7+IPpcItvPj6+nzM809J2sShrVN1cStbltYRPveVRL1UhZtW8dLPNvVllIV1B9UaFzMv8Nf"
 		"2vmr6LFnIveLiYwN71s4Lg==";
-	
+
 	hasp_handle_t handle;
 	unsigned char DataBuf[8] = { 0x00 };
 
-	status = hasp_login(feature_id , vendor_code, &handle);
+	status = hasp_login(feature_id, vendor_code, &handle);
 	if (status != HASP_STATUS_OK) {
 		printf("hasp_login failed: %d\n", status);
 		return -1;
 	}
 
-	status = hasp_read(handle, HASP_FILEID_RO,0, sizeof(DataBuf), DataBuf);
+	status = hasp_read(handle, HASP_FILEID_RO, 0, sizeof(DataBuf), DataBuf);
 	if (status != HASP_STATUS_OK) {
 		printf("hasp_read failed: %d\n", status);
 		return -2;
@@ -1333,7 +1333,7 @@ int KeyproEncAndDec() {
 		printf("hasp_encrypt failed: %d\n", status);
 		return -2;
 	}
-	
+
 	memcpy(CipherText, PlainText, sizeof(PlainText));
 	memset(PlainText, 0, sizeof(PlainText));
 
@@ -1438,41 +1438,42 @@ void SetProgress(HWND hWnd, int percent)
 	PostMessageW(hWnd, UPDATE_PERCENT, percent, 0);
 }
 
-int GetLabelSerialNumber() {
-	
+int GetLabelSerialNumber(unsigned char* SerialNumber, int* Len) {
+
 	int rtn = 0;
 
 	QRESULT ret_code;
 	HANDLE h;
-	if ((ret_code = qsysOpen(&h)) == 0) {
-		HANDLE hquery;
+	HANDLE hquery;
+	char reg_exp[256] = {
+	".*/Silver Label"
+	//"/QSYS/HW/Core/Logging Processor/Silver Label"
+	};
 
-
-		char reg_exp[256] = {
-			".*/Silver Label"
-			//"/QSYS/HW/Core/Logging Processor/Silver Label"
-		};
-
-		ret_code = qsysMakeQuery(h, reg_exp, &hquery);
-		if (ret_code == 0) {
-		}
-		else {
-			printf("Error %x calling qsysMakeQuery(\"%s\")\n", ret_code, reg_exp);
-		}
-
-		char key[256] = { 0 };
-		char value[256] = { 0 };
-
-		ret_code = qsysFirstEntry(hquery, key, 256, value, 256);
-		if (ret_code == 0) {
-			printf("Found Key %s=%s\n", key, value);
-		}
-		else {
-			printf("No Entry found\n");
-		}
-
-		qsysClose(h);
+	ret_code = qsysOpen(&h);
+	if (ret_code != 0) {
+		return -1;
 	}
+
+	ret_code = qsysMakeQuery(h, reg_exp, &hquery);
+	if (ret_code != 0) {
+		qsysClose(h);
+		return -2;
+	}
+
+	char key[256] = { 0 };
+	char value[256] = { 0 };
+
+	ret_code = qsysFirstEntry(hquery, key, 256, value, 256);
+	if (ret_code != 0) {
+		qsysClose(h);
+		return -3;
+	}
+
+	memcpy(SerialNumber, value, strlen(value));
+	*Len = strlen(value);
+
+	qsysClose(h);
 
 	return rtn;
 }
@@ -1779,10 +1780,23 @@ void WorkerThread(unsigned char cmd)
 			Sleep(1000);
 		}
 		break;
-	}	
+	}
 	case 'r':
 	{
-		GetLabelSerialNumber();
+		unsigned char SerialNumber[256] = { 0x00 };
+		int Len = 0;
+		rtn = GetLabelSerialNumber(SerialNumber, &Len);
+		if(rtn != 0) {
+			printf("GetLabelSerialNumber error: %d\n", rtn);
+		}
+		else {
+			printf("GetLabelSerialNumber OK\n");
+			printf("Label Serial Number: ");
+			for (int i = 0; i < Len; i++) {
+				printf("%c", SerialNumber[i]);
+			}
+			printf("\n");
+		}	
 
 		break;
 	}
