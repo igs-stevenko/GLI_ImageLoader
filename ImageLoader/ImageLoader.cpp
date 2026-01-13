@@ -470,7 +470,7 @@ int aes256_decrypt_file_and_write(const char* in_file, const char* out_file,
 	fclose(fin);
 	fclose(fout);
 
-	return 1;
+	return 0;
 }
 
 int Aes256Encrypt_Test(void) {
@@ -510,10 +510,10 @@ int Aes256Decrypt_Test(void) {
 	};
 
 	unsigned char iv[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-							0x08, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e };
+							0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
 
 	printf("Decrypting...\n");
-	rtn = aes256_decrypt_file("encrypt_aes256.bin", key, iv);
+	rtn = aes256_decrypt_file_and_write("encrypt_aes256.bin","dec.bin", key, iv);
 	if (rtn != 0) {
 		printf("Decrypt failed, rtn = %d\n", rtn);
 		return -1;
@@ -1478,6 +1478,86 @@ int GetLabelSerialNumber(unsigned char* SerialNumber, int* Len) {
 	return rtn;
 }
 
+
+int GetScreenUUID(unsigned char *ScreenUUID) {
+
+	int rtn = 0;
+	SECURITY_ATTRIBUTES sa = { 0 };
+	HANDLE hRead = NULL, hWrite = NULL;
+	STARTUPINFOA si = { 0 };
+	PROCESS_INFORMATION pi = { 0 };
+	char buffer[4096];
+	DWORD bytesRead;
+	DWORD total = 0;
+
+	sa.nLength = sizeof(sa);
+	sa.bInheritHandle = TRUE;
+
+	// 建立 pipe
+	if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+		printf("CreatePipe failed\n");
+		return 1;
+	}
+
+	// 讀取端不能被子行程繼承
+	SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdOutput = hWrite;
+	si.hStdError = hWrite;   // 錯誤也一起抓
+	si.hStdInput = NULL;
+
+	char cmd[512] =
+		"cmd.exe /c powershell -NoProfile -Command \""
+		"Get-WmiObject -Namespace root\\wmi -Class WmiMonitorID | ForEach-Object { "
+		"$mfg = ($_.ManufacturerName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join '' ; "
+		"$sn  = ($_.SerialNumberID  | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join '' ; "
+		"if ($mfg -and $sn) { \\\"$mfg-$sn\\\" } "
+		"} | Sort-Object\"";
+
+	if (!CreateProcessA(
+		NULL,
+		cmd,
+		NULL,
+		NULL,
+		TRUE,   // ⭐ 必須 TRUE，才能繼承 pipe
+		CREATE_NO_WINDOW,
+		NULL,
+		NULL,
+		&si,
+		&pi)) {
+
+		printf("CreateProcess failed (%lu)\n", GetLastError());
+		return 1;
+	}
+
+	// 父程序不需要寫入端
+	CloseHandle(hWrite);
+
+	// 讀取 PowerShell 輸出
+	while (ReadFile(hRead, buffer + total,
+		sizeof(buffer) - total - 1,
+		&bytesRead, NULL) && bytesRead > 0) {
+		total += bytesRead;
+	}
+
+	buffer[total] = '\0';
+
+	WaitForSingleObject(pi.hProcess, INFINITE);
+
+	CloseHandle(hRead);
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+
+	// ⭐ 最終字串結果
+	//printf("Monitor ID Result:\n%s\n", buffer);
+	memcpy(ScreenUUID, buffer, strlen(buffer));
+
+	return 0;
+}
+
+
 void Usage(void) {
 
 	std::cout << "用法:\n";
@@ -1493,12 +1573,13 @@ void Usage(void) {
 	std::cout << "  ImageLoader.exe -j : Decrypt by TPM RSA\n";
 	std::cout << "  ImageLoader.exe -k : Get TPM RSA Public Key\n";
 	std::cout << "  ImageLoader.exe -l : TPM C/R\n";
-	std::cout << "  ImageLoader.exe -m : Read HID\n";
+	std::cout << "  ImageLoader.exe -m : Read HID.\n";
 	std::cout << "  ImageLoader.exe -n : CRC32 Compute time\n";
 	std::cout << "  ImageLoader.exe -o : Read from Keypro\n";
 	std::cout << "  ImageLoader.exe -p : Keypro Encrpyt Data and Decrypt\n";
 	std::cout << "  ImageLoader.exe -q : Run the Progress Bar\n";
 	std::cout << "  ImageLoader.exe -r : Get Label Serial Number\n";
+	std::cout << "  ImageLoader.exe -s : Get Screen UUID\n";
 }
 
 void WorkerThread(unsigned char cmd)
@@ -1588,17 +1669,28 @@ void WorkerThread(unsigned char cmd)
 	}
 	case 'g':
 	{
-		DWORD t1 = GetTickCount64();
-		rtn = ChaCha20_dec();
-		DWORD t2 = GetTickCount64();
-		if (rtn != 0) {
-			printf("ChaCha20_dec error: %d\n", rtn);
-		}
-		else {
-			printf("ChaCha20_dec OK\n");
-			printf("Decrypt time: %llu ms\n", (unsigned long long)(t2 - t1));
-		}
+		DWORD t1, t2;
+		DWORD MaxTime = 0;
 
+		while (1) {
+
+			t1 = GetTickCount64();
+			rtn = ChaCha20_dec();
+			t2 = GetTickCount64();
+			if (rtn != 0) {
+				printf("ChaCha20_dec error: %d\n", rtn);
+			}
+			else {
+				if (MaxTime < (t2 - t1))
+					MaxTime = t2 - t1;
+
+				printf("ChaCha20_dec OK\n");
+				printf("Decrypt time: %llu ms\n", (unsigned long long)(t2 - t1));
+				printf("Decrypt MaxTime: %llu ms\n", (unsigned long long)MaxTime);
+			}
+
+			Sleep(1000);
+		}
 
 		break;
 	}
@@ -1783,6 +1875,7 @@ void WorkerThread(unsigned char cmd)
 	}
 	case 'r':
 	{
+
 		unsigned char SerialNumber[256] = { 0x00 };
 		int Len = 0;
 		rtn = GetLabelSerialNumber(SerialNumber, &Len);
@@ -1798,8 +1891,25 @@ void WorkerThread(unsigned char cmd)
 			printf("\n");
 		}	
 
+
 		break;
 	}
+	case 's':
+	{
+		unsigned char ScreenUUID[4096] = { 0x00 };
+		rtn = GetScreenUUID(ScreenUUID);
+		if (rtn != 0) {
+			printf("GetScreenUUID error: %d\n", rtn);
+		}
+		else {
+			crc32((const uint8_t* )ScreenUUID, strlen((const char *)ScreenUUID));
+			printf("GetScreenUUID OK\n");
+			printf("ScreenUUID crc: \n");
+			printf("CRC32 = 0x%08X\n", ScreenUUID);
+		}
+		break;
+	}
+
 	default:
 		Usage();
 		break;
@@ -1873,6 +1983,9 @@ int main(int argc, char* argv[])
 	}
 	else if (arg1 == "-r") {
 		cmd = 'r';
+	}
+	else if (arg1 == "-s") {
+		cmd = 's';
 	}
 	else {
 		Usage();
