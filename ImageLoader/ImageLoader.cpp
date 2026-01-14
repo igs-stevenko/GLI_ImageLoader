@@ -9,6 +9,7 @@
 #include <string>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #include <stdint.h>
 #include <tbs.h>
 #include <ncrypt.h>
@@ -651,6 +652,58 @@ DWORD CreatePrimary(UINT32* primaryHandle, BYTE* outPub, UINT16* outPubLen)
 }
 
 
+// 混合 Key 和 UUID 產生 SessionKey (SHA-256)
+void Derive_Session_Key(const unsigned char* RawKey, int KeyLen,
+	const char* UUID,
+	unsigned char* OutSessionKey) {
+
+	// 1. 準備 Buffer: RawKey + UUID
+	std::vector<unsigned char> mixBuffer;
+
+	// 放入 RawKey
+	mixBuffer.insert(mixBuffer.end(), RawKey, RawKey + KeyLen);
+
+	// 放入 UUID
+	if (UUID) {
+		int uuidLen = strlen(UUID);
+		mixBuffer.insert(mixBuffer.end(), UUID, UUID + uuidLen);
+	}
+
+	// 2. 計算 SHA-256
+	SHA256_CTX sha256;
+	SHA256_Init(&sha256);
+	SHA256_Update(&sha256, mixBuffer.data(), mixBuffer.size());
+	SHA256_Final(OutSessionKey, &sha256);
+}
+
+// 記憶體對記憶體 ChaCha20 解密
+int ChaCha20_Decrypt_Buffer(unsigned char* ciphertext, int len, unsigned char* plaintext, 
+                            const unsigned char key[32], const unsigned char nonce[12]) {
+	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	if (!ctx) return -1;
+
+	if (!EVP_DecryptInit_ex(ctx, EVP_chacha20(), NULL, key, nonce)) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -2;
+	}
+
+	int outLen = 0;
+	if (!EVP_DecryptUpdate(ctx, plaintext, &outLen, ciphertext, len)) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -3;
+	}
+
+	// ChaCha20 is a stream cipher, so Final usually doesn't output anything, but good practice to call
+	int finalLen = 0;
+	if (!EVP_DecryptFinal_ex(ctx, plaintext + outLen, &finalLen)) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -4;
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+	return 0;
+}
+
 int ChaCha20_enc() {
 
 	int rtn = 0;
@@ -820,6 +873,84 @@ int ChaCha20_dec_and_write() {
 	fout.close();
 
 	return rtn;
+}
+
+int ChaCha20_enc_file_custom(const char* inputFile, const char* outputFile,
+	const unsigned char* key, const unsigned char* nonce) {
+	std::ifstream fin(inputFile, std::ios::binary);
+	if (!fin) {
+		std::cout << "無法開啟 " << inputFile << "\n";
+		return -1;
+	}
+
+	std::ofstream fout(outputFile, std::ios::binary);
+	if (!fout) {
+		std::cout << "無法建立 " << outputFile << "\n";
+		return -1;
+	}
+
+	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(ctx, EVP_chacha20(), NULL, key, nonce);
+
+	const size_t BUF_SIZE = 64 * 1024;
+	unsigned char inBuf[BUF_SIZE];
+	unsigned char outBuf[BUF_SIZE + 16];
+
+	while (true) {
+		fin.read((char*)inBuf, BUF_SIZE);
+		std::streamsize bytesRead = fin.gcount();
+		if (bytesRead <= 0)
+			break;
+
+		int outLen = 0;
+		EVP_EncryptUpdate(ctx, outBuf, &outLen, inBuf, (int)bytesRead);
+		fout.write((char*)outBuf, outLen);
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+	fin.close();
+	fout.close();
+
+	return 0;
+}
+
+int ChaCha20_dec_file_custom(const char* inputFile, const char* outputFile, 
+                             const unsigned char* key, const unsigned char* nonce) {
+	std::ifstream fin(inputFile, std::ios::binary);
+	if (!fin) {
+		std::cout << "無法開啟 " << inputFile << "\n";
+		return -1;
+	}
+
+	std::ofstream fout(outputFile, std::ios::binary);
+	if (!fout) {
+		std::cout << "無法建立 " << outputFile << "\n";
+		return -1;
+	}
+
+	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	EVP_DecryptInit_ex(ctx, EVP_chacha20(), NULL, key, nonce);
+
+	const size_t BUF_SIZE = 64 * 1024; 
+	unsigned char inBuf[BUF_SIZE];
+	unsigned char outBuf[BUF_SIZE + 16];
+
+	while (true) {
+		fin.read((char*)inBuf, BUF_SIZE);
+		std::streamsize bytesRead = fin.gcount();
+		if (bytesRead <= 0)
+			break;
+
+		int outLen = 0;
+		EVP_DecryptUpdate(ctx, outBuf, &outLen, inBuf, (int)bytesRead);
+		fout.write((char*)outBuf, outLen);
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+	fin.close();
+	fout.close();
+
+	return 0;
 }
 
 
@@ -1250,6 +1381,50 @@ void print_hex(unsigned char* buf, int len) {
 	}
 }
 
+int ReadFromKeypro_Get(unsigned char* outBuf) {
+
+	int rtn = 0;
+	hasp_status_t status = HASP_STATUS_OK;
+
+	hasp_feature_t feature_id = 60001;
+	unsigned char vendor_code[] =
+		"eApZw4pLQubJE71z6zkRH18zzQEebtatmnG4GEgoATapsLUtlFGGeq61r1dQt9BW3jVKSTkr7FhwoiqK"
+		"1D3MvmNxzHLX79ycT/bBk1wd+15On+nXoI9mBvRRo6igEsR7lBzsKywK1O2devo/qnzXr5YH5vDXhoJa"
+		"WJErCH/gmzejKHuaARWAo7dPrl6z4hhBFbmhWdDFyk7sxO9I+XVStaVjDNRXypBkczGfjsnYOPFjIZx4"
+		"F/mIn09BBQ8bCjnnj7C1SYvGXGgM8zzxjo40Aj2wB/JFRhAf4xnCiCLAPtBmtBpN4BEMWBuKtqVHYAvk"
+		"1PpWpOWJ30WOK5hwFXayzUMuaETtfZgwHKAMgzADxKSfg1QDlgFhehp098GuJu94IR1D5YHIIChdCWvW"
+		"Fn0cezcmErPRqlXJ6Pn22VE7E+LRd58zpm2mhnql4jF3ncFAaFTzwpzMTIqI3VPOBRCHFeQ0GoXQs65J"
+		"FJW3EShyrN4oTq6deZ8Jn11cGwJ6DPepQrTRllXfg+1qzN2+S8KuZ6B2Do+gzgnLnzj3uDiYK7p2eCMT"
+		"oWTjO2hZypTFa46lzl3Drs7bA5wP6H9j1tuHzxpFi07q4bnGCF3JXOGFRp4TeTk5YNh/4A4DiDXesiWh"
+		"wNWuI7dGEYpoKpfuMPLuKYQeZ5h1u3/48rGFwOK0zazk/zeRZL3NbCpoCMFuRh8Pg6GTArv52tMY9yqz"
+		"640avx7sr64BEd3RU8Zc+P/wYT2YvHIVmrXPnUGzTiiNgZf6sUcORkzqj//Kl+bEQWqPMcpZn8VIeOHt"
+		"+vxbo4jstn/rBmgyWu51gsw21DthaTb3SYCs/fmope07EDK0pOSh/MUFqdGQN4dtbwPFFZQ991UlNYf4"
+		"eGuQiED7V7+IPpcItvPj6+nzM809J2sShrVN1cStbltYRPveVRL1UhZtW8dLPNvVllIV1B9UaFzMv8Nf"
+		"2vmr6LFnIveLiYwN71s4Lg==";
+
+	hasp_handle_t handle;
+	unsigned char DataBuf[8] = { 0x00 };
+
+	status = hasp_login(feature_id, vendor_code, &handle);
+	if (status != HASP_STATUS_OK) {
+		printf("hasp_login failed: %d\n", status);
+		return -1;
+	}
+
+	status = hasp_read(handle, HASP_FILEID_RO, 0, sizeof(DataBuf), DataBuf);
+	if (status != HASP_STATUS_OK) {
+		printf("hasp_read failed: %d\n", status);
+		return -2;
+	}
+
+	if (outBuf) {
+		memcpy(outBuf, DataBuf, sizeof(DataBuf));
+	}
+
+	hasp_logout(handle);
+	return rtn;
+}
+
 int ReadFromKeypro() {
 
 	int rtn = 0;
@@ -1567,7 +1742,9 @@ void Usage(void) {
 	std::cout << "  ImageLoader.exe -d : Read File and Encrypt by AES256\n";
 	std::cout << "  ImageLoader.exe -e : Read File and Decrypt by AES256\n";
 	std::cout << "  ImageLoader.exe -f : Read File and Encrypt by ChaCha20\n";
+	std::cout << "  ImageLoader.exe -F <file> <keyfile> : Encrypt specific file by ChaCha20 using key from file\n";
 	std::cout << "  ImageLoader.exe -g : Read File and Decrypt by ChaCha20\n";
+	std::cout << "  ImageLoader.exe -G <file> <keyfile> : Decrypt specific file by ChaCha20 using key from file\n";
 	std::cout << "  ImageLoader.exe -h : Generate TPM RSA Keys\n";
 	std::cout << "  ImageLoader.exe -i : Encrypt by TPM RSA\n";
 	std::cout << "  ImageLoader.exe -j : Decrypt by TPM RSA\n";
@@ -1579,8 +1756,13 @@ void Usage(void) {
 	std::cout << "  ImageLoader.exe -p : Keypro Encrpyt Data and Decrypt\n";
 	std::cout << "  ImageLoader.exe -q : Run the Progress Bar\n";
 	std::cout << "  ImageLoader.exe -r : Get Label Serial Number\n";
-	std::cout << "  ImageLoader.exe -s : Get Screen UUID\n";
+	std::cout << "  ImageLoader.exe -1 <file> : Encrypt specific file (Bind to UUID)\n";
+	std::cout << "  ImageLoader.exe -2 <file> : Decrypt specific file (Verify UUID Binding)\n";
+	std::cout << "  ImageLoader.exe -z : Run Auto-Decryption Workflow (Keypro->UUID->EEPROM->DecFile)\n";
 }
+
+std::string g_InputFilename;
+std::string g_KeyFilename;
 
 void WorkerThread(unsigned char cmd)
 {
@@ -1589,7 +1771,7 @@ void WorkerThread(unsigned char cmd)
 	int rtn = 0;
 
 	switch (cmd) {
-
+	
 	case 'a':
 	{
 		unsigned char key[] = "igsrd";
@@ -1667,31 +1849,69 @@ void WorkerThread(unsigned char cmd)
 
 		break;
 	}
-	case 'g':
+	case 'F':
 	{
-		DWORD t1, t2;
-		DWORD MaxTime = 0;
-
-		while (1) {
-
-			t1 = GetTickCount64();
-			rtn = ChaCha20_dec();
-			t2 = GetTickCount64();
-			if (rtn != 0) {
-				printf("ChaCha20_dec error: %d\n", rtn);
-			}
-			else {
-				if (MaxTime < (t2 - t1))
-					MaxTime = t2 - t1;
-
-				printf("ChaCha20_dec OK\n");
-				printf("Decrypt time: %llu ms\n", (unsigned long long)(t2 - t1));
-				printf("Decrypt MaxTime: %llu ms\n", (unsigned long long)MaxTime);
-			}
-
-			Sleep(1000);
+		printf("Encrypting file: %s\n", g_InputFilename.c_str());
+		printf("Using Key file: %s\n", g_KeyFilename.c_str());
+		
+		unsigned char KEY[32] = { 0 };
+		if (ReadFromFile(g_KeyFilename.c_str(), KEY, 32) != 0) {
+			printf("Error reading key file (must be at least 32 bytes).\n");
+			break;
 		}
 
+		unsigned char nonce[12] = {
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+			0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+		};
+
+		std::string outFile = g_InputFilename + ".enc";
+		if (ChaCha20_enc_file_custom(g_InputFilename.c_str(), outFile.c_str(), KEY, nonce) == 0) {
+			printf("Success! Output: %s\n", outFile.c_str());
+		} else {
+			printf("Encryption Failed!\n");
+		}
+		break;
+	}
+	case 'g':
+	{
+		DWORD t1 = GetTickCount64();
+		rtn = ChaCha20_dec_and_write();
+		DWORD t2 = GetTickCount64();
+		if (rtn != 0) {
+			printf("ChaCha20_dec_and_write error: %d\n", rtn);
+		}
+		else {
+			printf("ChaCha20_dec_and_write OK\n");
+			printf("Decrypt time: %llu ms\n", (unsigned long long)(t2 - t1));
+		}
+
+
+		break;
+	}
+	case 'G':
+	{
+		printf("Decrypting file: %s\n", g_InputFilename.c_str());
+		printf("Using Key file: %s\n", g_KeyFilename.c_str());
+
+		unsigned char KEY[32] = { 0 };
+		if (ReadFromFile(g_KeyFilename.c_str(), KEY, 32) != 0) {
+			printf("Error reading key file (must be at least 32 bytes).\n");
+			break;
+		}
+
+		unsigned char nonce[12] = {
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+			0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+		};
+
+		std::string outFile = g_InputFilename + ".dec";
+		if (ChaCha20_dec_file_custom(g_InputFilename.c_str(), outFile.c_str(), KEY, nonce) == 0) {
+			printf("Success! Output: %s\n", outFile.c_str());
+		}
+		else {
+			printf("Decryption Failed!\n");
+		}
 		break;
 	}
 	case 'h':
@@ -1910,6 +2130,162 @@ void WorkerThread(unsigned char cmd)
 		break;
 	}
 
+	case '1':
+	{
+		printf("=== Encrypt Deck Key (-1) ===\n");
+		printf("Input File: %s\n", g_InputFilename.c_str());
+
+		// 1. Prepare Data
+		unsigned char RawKey[32] = {
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33
+		};
+
+		unsigned char Nonce[12] = {
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+			0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+		};
+
+		char RealUUID[256] = { 0 };
+		int UUIDLen = 0;
+
+		printf("[TEST MODE] Using Fake UUID for encryption.\n");
+		strcpy(RealUUID, "TEST-REAL-UUID-1234");
+		/*
+		if (GetLabelSerialNumber((unsigned char*)RealUUID, &UUIDLen) != 0) {
+			strcpy(RealUUID, "UNKNOWN_UUID");
+		}
+		*/
+		printf("UUID: %s\n", RealUUID);
+
+		// 2. Derive Key
+		unsigned char SessionKey[32];
+		Derive_Session_Key(RawKey, 32, RealUUID, SessionKey);
+		printf("Session Key Derived.\n");
+
+		// 3. Encrypt
+		std::string outFile = g_InputFilename + ".enc";
+		printf("Encrypting '%s' -> '%s'...\n", g_InputFilename.c_str(), outFile.c_str());
+		
+		if (ChaCha20_enc_file_custom(g_InputFilename.c_str(), outFile.c_str(), SessionKey, Nonce) == 0) {
+			printf("Success.\n");
+		}
+		else {
+			printf("Encryption Failed!\n");
+		}
+		break;
+	}
+	case '2':
+	{
+		printf("=== Decrypt Deck Key (-2) ===\n");
+		printf("Input File: %s\n", g_InputFilename.c_str());
+
+		// 1. Prepare Data (Must match Encrypt side)
+		unsigned char RawKey[32] = {
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33
+		};
+
+		unsigned char Nonce[12] = {
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+			0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+		};
+
+		char RealUUID[256] = { 0 };
+		int UUIDLen = 0;
+
+		printf("[TEST MODE] Using Fake UUID for decryption.\n");
+		strcpy(RealUUID, "TEST-REAL-UUID-1234");
+		/*
+		if (GetLabelSerialNumber((unsigned char*)RealUUID, &UUIDLen) != 0) {
+			strcpy(RealUUID, "UNKNOWN_UUID");
+		}
+		*/
+		printf("UUID: %s\n", RealUUID);
+
+		// 2. Derive Key
+		unsigned char SessionKey[32];
+		Derive_Session_Key(RawKey, 32, RealUUID, SessionKey);
+		printf("Session Key Derived.\n");
+
+		// 3. Decrypt
+		std::string outFile = g_InputFilename + ".dec";
+		printf("Decrypting '%s' -> '%s'...\n", g_InputFilename.c_str(), outFile.c_str());
+
+		if (ChaCha20_dec_file_custom(g_InputFilename.c_str(), outFile.c_str(), SessionKey, Nonce) == 0) {
+			printf("Success.\n");
+		}
+		else {
+			printf("Decryption Failed!\n");
+		}
+		break;
+	}
+	case 'z':
+	{
+		printf("=== Run Auto-Decryption Workflow (-z) ===\n");
+
+		// 1. Get Raw Key (Simulate Reading from Keypro)
+		unsigned char RawKey[32] = {
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33,
+			0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x11, 0x22, 0x33
+		};
+		printf("Step 1: Keypro Data Loaded (Simulated).\n");
+
+		// 2. Get UUID (Simulate Hardware Read)
+		char RealUUID[256] = { 0 };
+		strcpy(RealUUID, "TEST-REAL-UUID-1234");
+		printf("Step 2: UUID Loaded: %s\n", RealUUID);
+
+		// 3. Derive Session Key
+		unsigned char SessionKey[32];
+		Derive_Session_Key(RawKey, 32, RealUUID, SessionKey);
+		printf("Step 3: Session Key Derived (Hash(Keypro + UUID)).\n");
+
+		// 4. Decrypt Deck Key (mykey.bin.enc) -> Memory
+		const char* encKeyFile = "mykey.bin.enc";
+		unsigned char DeckKeyEncBuf[32]; // Assuming DeckKey is 32 bytes
+		unsigned char DeckKey[32];       // The decrypted DeckKey
+
+		// Read encrypted key file
+		if (ReadFromFile(encKeyFile, DeckKeyEncBuf, 32) != 0) {
+			printf("Error: Failed to read '%s' (Must be 32 bytes).\n", encKeyFile);
+			break;
+		}
+
+		// Fixed Nonce (Must match what was used to encrypt mykey.bin.enc in case '1')
+		unsigned char Nonce[12] = {
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+			0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+		};
+
+		// Decrypt in memory
+		if (ChaCha20_Decrypt_Buffer(DeckKeyEncBuf, 32, DeckKey, SessionKey, Nonce) != 0) {
+			printf("Error: Failed to decrypt Deck Key.\n");
+			break;
+		}
+		printf("Step 4: Deck Key Decrypted (Held in Memory).\n");
+
+		// 5. Decrypt Content (input.bin.enc) using DeckKey -> final_output.bin
+		const char* encContentFile = "input.bin.enc";
+		const char* finalOutputFile = "final_output.bin";
+
+		printf("Step 5: Decrypting '%s' -> '%s'...\n", encContentFile, finalOutputFile);
+		
+		if (ChaCha20_dec_file_custom(encContentFile, finalOutputFile, DeckKey, Nonce) == 0) {
+			printf("=== Workflow Success! Output saved to '%s' ===\n", finalOutputFile);
+		}
+		else {
+			printf("Error: Failed to decrypt content file.\n");
+		}
+
+		break;
+	}
 	default:
 		Usage();
 		break;
@@ -1948,8 +2324,32 @@ int main(int argc, char* argv[])
 	else if (arg1 == "-f") {
 		cmd = 'f';
 	}
+	else if (arg1 == "-F") {
+		if (argc >= 4) {
+			cmd = 'F';
+			g_InputFilename = argv[2];
+			g_KeyFilename = argv[3];
+		}
+		else {
+			printf("Error: -F requires input filename and key filename.\n");
+			Usage();
+			return 0;
+		}
+	}
 	else if (arg1 == "-g") {
 		cmd = 'g';
+	}
+	else if (arg1 == "-G") {
+		if (argc >= 4) {
+			cmd = 'G';
+			g_InputFilename = argv[2];
+			g_KeyFilename = argv[3];
+		}
+		else {
+			printf("Error: -G requires input filename and key filename.\n");
+			Usage();
+			return 0;
+		}
 	}
 	else if (arg1 == "-h") {
 		cmd = 'h';
@@ -1984,8 +2384,30 @@ int main(int argc, char* argv[])
 	else if (arg1 == "-r") {
 		cmd = 'r';
 	}
-	else if (arg1 == "-s") {
-		cmd = 's';
+	else if (arg1 == "-1") {
+		if (argc >= 3) {
+			cmd = '1';
+			g_InputFilename = argv[2];
+		}
+		else {
+			printf("Error: -1 requires input filename.\n");
+			Usage();
+			return 0;
+		}
+	}
+	else if (arg1 == "-2") {
+		if (argc >= 3) {
+			cmd = '2';
+			g_InputFilename = argv[2];
+		}
+		else {
+			printf("Error: -2 requires input filename.\n");
+			Usage();
+			return 0;
+		}
+	}
+	else if (arg1 == "-z") {
+		cmd = 'z';
 	}
 	else {
 		Usage();
