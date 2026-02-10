@@ -14,6 +14,7 @@
 #include <ncrypt.h>
 #include <commctrl.h>
 #include <thread>
+#include <openssl/sha.h>
 #include "hasp_api.h"
 #include "qxteeprom.h"
 #include "libqsys.h"
@@ -396,6 +397,59 @@ int aes256_encrypt_file(const char* in_file, const char* out_file,
 
 	return 1;
 }
+int Aes256Encrypt(
+	BYTE* Key,
+	BYTE* IV,
+	BYTE* Input,
+	DWORD InputLen,
+	BYTE* Output,
+	DWORD OutputBufSize,   // 👈 新增
+	DWORD* OutputLen
+)
+{
+	int outLen = 0;
+	DWORD total = 0;
+
+	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	if (!ctx) {
+		printf("[INFO] : %d\n", __LINE__);
+		return -2;
+	}
+
+	if (!EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, Key, IV)) {
+		printf("[INFO] : %d\n", __LINE__);
+		goto err;
+	}
+
+	if (!EVP_EncryptUpdate(ctx, Output, &outLen, Input, InputLen)) {
+		printf("[INFO] : %d\n", __LINE__);
+		goto err;
+	}
+
+	total += outLen;
+
+	if (!EVP_EncryptFinal_ex(ctx, Output + total, &outLen)) {
+		printf("[INFO] : %d\n", __LINE__);
+		goto err;
+	}
+
+	total += outLen;
+
+	if (total > OutputBufSize) {
+		printf("total = %d\n", total);
+		printf("OutputBufSize = %d\n", OutputBufSize);
+		printf("[INFO] : %d\n", __LINE__);
+		goto err;
+	}
+
+	*OutputLen = total;
+	EVP_CIPHER_CTX_free(ctx);
+	return 0;
+
+err:
+	EVP_CIPHER_CTX_free(ctx);
+	return -1;
+}
 
 // AES-256-CBC 解密檔案
 int aes256_decrypt_file(const char* in_file,
@@ -426,6 +480,8 @@ int aes256_decrypt_file(const char* in_file,
 
 	EVP_CIPHER_CTX_free(ctx);
 	fclose(fin);
+
+	printf("[INFO] : %d\n", __LINE__);
 
 	return 0;
 }
@@ -920,115 +976,191 @@ int TPMSetRSAKey(const char* KeyName) {
 	return rtn;
 }
 
-int TPMUseKeyEnc(const char* KeyName, BYTE* DataIn, DWORD DataInLen, BYTE* DataOut, DWORD* DataOutLen) {
 
-	int rtn = 0;
-
+int TPMUseKeyEnc(
+	const char* KeyName,
+	BYTE* DataIn,
+	DWORD DataInLen,
+	BYTE* DataOut,
+	DWORD* DataOutLen
+) {
 	SECURITY_STATUS status;
 	NCRYPT_PROV_HANDLE hProv = 0;
 	NCRYPT_KEY_HANDLE hKey = 0;
-	wchar_t nameW[128] = { 0x00 };
+	wchar_t nameW[128] = { 0 };
+
 	mbstowcs(nameW, KeyName, strlen(KeyName) + 1);
 
-	// Step 1: 打開 TPM 金鑰儲存提供者
+	// 1. Open TPM provider
 	status = NCryptOpenStorageProvider(
 		&hProv,
-		MS_PLATFORM_CRYPTO_PROVIDER,   // 使用 TPM
-		0);
-	if (status != ERROR_SUCCESS) {
-		printf("Open provider failed: 0x%X\n", status);
+		MS_PLATFORM_CRYPTO_PROVIDER,
+		0
+	);
+	if (status != ERROR_SUCCESS)
 		return -1;
-	}
 
-
+	// 2. Open key
 	status = NCryptOpenKey(
 		hProv,
 		&hKey,
-		nameW,   // ⚡ 你建立金鑰時的名稱
+		nameW,
 		0,
-		0);
-
+		0
+	);
 	if (status != ERROR_SUCCESS) {
-		printf("Open key failed: 0x%X\n", status);
+		NCryptFreeObject(hProv);
 		return -2;
 	}
 
+	// 3. OAEP padding info (⚠️ 必須與解密一致)
+	BCRYPT_OAEP_PADDING_INFO oaep = {
+		BCRYPT_SHA256_ALGORITHM,
+		NULL,
+		0
+	};
 
-	// Step 2: 使用 TPM RSA 公鑰加密 AES Key
+	DWORD cipherLen = 0;
+
+	// 4. 第一次呼叫：詢問輸出長度（一定是 RSA key size）
 	status = NCryptEncrypt(
 		hKey,
-		DataIn, DataInLen,
+		DataIn,
+		DataInLen,
+		&oaep,
 		NULL,
-		DataOut, *DataOutLen,
-		DataOutLen,
-		NCRYPT_PAD_PKCS1_FLAG);      // 使用 RSA PKCS#1 padding
+		0,
+		&cipherLen,
+		NCRYPT_PAD_OAEP_FLAG
+	);
 	if (status != ERROR_SUCCESS) {
-		printf("Encrypt failed: 0x%X\n", status);
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
 		return -3;
 	}
 
+	// caller 必須提供足夠大的 buffer
+	if (*DataOutLen < cipherLen) {
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
+		return -4;
+	}
+
+	// 5. 第二次呼叫：真正加密
+	status = NCryptEncrypt(
+		hKey,
+		DataIn,
+		DataInLen,
+		&oaep,
+		DataOut,
+		cipherLen,
+		&cipherLen,
+		NCRYPT_PAD_OAEP_FLAG
+	);
+	if (status != ERROR_SUCCESS) {
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
+		return -5;
+	}
+
+	*DataOutLen = cipherLen;
+
 	NCryptFreeObject(hKey);
 	NCryptFreeObject(hProv);
-
-	return rtn;
+	return 0;
 }
 
-
-int TPMUseKeyDec(const char* KeyName, BYTE* DataIn, DWORD DataInLen, BYTE* DataOut, DWORD* DataOutLen) {
-
-	int rtn = 0;
-
+int TPMUseKeyDec(
+	const char* KeyName,
+	BYTE* DataIn,
+	DWORD DataInLen,
+	BYTE* DataOut,
+	DWORD* DataOutLen
+) {
 	SECURITY_STATUS status;
 	NCRYPT_PROV_HANDLE hProv = 0;
 	NCRYPT_KEY_HANDLE hKey = 0;
-	wchar_t nameW[128] = { 0x00 };
+	wchar_t nameW[128] = { 0 };
+
 	mbstowcs(nameW, KeyName, strlen(KeyName) + 1);
 
-	BYTE decrypted[256];
-	DWORD decryptedSize = sizeof(decrypted);
-
-	// Step 1: 打開 TPM 金鑰儲存提供者
+	// 1. Open provider
 	status = NCryptOpenStorageProvider(
 		&hProv,
-		MS_PLATFORM_CRYPTO_PROVIDER,   // 使用 TPM
-		0);
-	if (status != ERROR_SUCCESS) {
-		printf("Open provider failed: 0x%X\n", status);
-		return -1;
-	}
+		MS_PLATFORM_CRYPTO_PROVIDER,
+		0
+	);
+	if (status != ERROR_SUCCESS) return -1;
 
-
+	// 2. Open key
 	status = NCryptOpenKey(
 		hProv,
 		&hKey,
-		nameW,   // ⚡ 你建立金鑰時的名稱
+		nameW,
 		0,
-		0);
+		0
+	);
+	if (status != ERROR_SUCCESS) return -2;
 
-	if (status != ERROR_SUCCESS) {
-		printf("Open key failed: 0x%X\n", status);
-		return -2;
-	}
+	// 3. OAEP padding info (⚠️ 必須跟加密一致)
+	BCRYPT_OAEP_PADDING_INFO oaep = {
+		BCRYPT_SHA256_ALGORITHM,
+		NULL,
+		0
+	};
 
-	// Step 4: 使用 TPM RSA 私鑰解密（私鑰在 TPM 內）
+	DWORD plainLen = 0;
 
+	// 4. 第一次呼叫：問需要多大 buffer
 	status = NCryptDecrypt(
 		hKey,
-		DataIn, DataInLen,
+		DataIn,
+		DataInLen,
+		&oaep,
 		NULL,
-		DataOut, *DataOutLen,
-		DataOutLen,
-		NCRYPT_PAD_PKCS1_FLAG);
-
+		0,
+		&plainLen,
+		NCRYPT_PAD_OAEP_FLAG
+	);
 	if (status != ERROR_SUCCESS) {
-		printf("Decrypt failed: 0x%X\n", status);
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
+		printf("[%s][%d]: 0x%X\n", __func__, __LINE__, status);
 		return -3;
 	}
 
+	// 呼叫端必須確保 DataOut 夠大
+	if (*DataOutLen < plainLen) {
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
+		printf("plainLen = %d, DataOutLen = %d\n", plainLen, *DataOutLen);
+		printf("[%s][%d]\n", __func__, __LINE__);
+		return -4;
+	}
+
+	// 5. 第二次呼叫：真正解密
+	status = NCryptDecrypt(
+		hKey,
+		DataIn,
+		DataInLen,
+		&oaep,
+		DataOut,
+		plainLen,
+		&plainLen,
+		NCRYPT_PAD_OAEP_FLAG
+	);
+	if (status != ERROR_SUCCESS) {
+		NCryptFreeObject(hKey);
+		NCryptFreeObject(hProv);
+		printf("[%s][%d]: 0x%X\n", __func__, __LINE__, status);
+		return -5;
+	}
+
+	*DataOutLen = plainLen;
+
 	NCryptFreeObject(hKey);
 	NCryptFreeObject(hProv);
-
-	return rtn;
+	return 0;
 }
 
 int TPMGetPubKey(const char* KeyName, BYTE* pubKey, DWORD* pubKeySize) {
@@ -1580,6 +1712,7 @@ void Usage(void) {
 	std::cout << "  ImageLoader.exe -q : Run the Progress Bar\n";
 	std::cout << "  ImageLoader.exe -r : Get Label Serial Number\n";
 	std::cout << "  ImageLoader.exe -s : Get Screen UUID\n";
+	std::cout << "  ImageLoader.exe -t : EVN Encrpyt Setting\n";
 }
 
 void WorkerThread(unsigned char cmd)
@@ -1736,7 +1869,7 @@ void WorkerThread(unsigned char cmd)
 	case 'j':
 	{
 		BYTE DataIn[] = {
-			0x93,0x0F,0x05,0x7F,0xA5,0xD8,0xB3,0x82,0xAE,0xDC,0x1F,0xF0,0xF5,0x53,0x25,0x11,0x6B,0x78,0xAA,0x76,0x37,0x77,0xE2,0xB6,0x06,0x3B,0xA0,0xB9,0x40,0x26,0x56,0xDE,0xBC,0xFB,0x04,0xEA,0x44,0x1E,0x6F,0xC1,0x99,0xC2,0x14,0x83,0xA2,0x1B,0x85,0xA0,0xDD,0xFB,0x76,0xB0,0x1D,0x4D,0xA3,0x7E,0x95,0x15,0x10,0x65,0x66,0x3A,0x4A,0x1E,0xC2,0x4A,0xD6,0x0A,0x28,0xC8,0x27,0x7F,0x03,0x58,0xBE,0xDF,0x8D,0xA0,0xFE,0x33,0xC7,0xE7,0x93,0x89,0x12,0x22,0x44,0x3C,0x58,0x9A,0x49,0x88,0x6F,0xAC,0xE5,0x4D,0x16,0xCD,0x7C,0x6A,0x8F,0x65,0xF1,0x2F,0xAA,0x98,0x46,0x89,0x77,0x24,0x26,0xE4,0x29,0xB5,0xAC,0xD8,0xD8,0xBC,0x01,0xD6,0x87,0x2A,0x48,0x4B,0x6B,0xD1,0x45,0x40,0x5B,0x82,0xB8,0xF2,0x42,0x75,0x07,0xA6,0xFA,0xEA,0x46,0x49,0x40,0x15,0x68,0xEA,0x7C,0x85,0x4D,0x1A,0x2C,0x09,0x4A,0x8C,0x76,0xCA,0x7D,0x03,0x34,0xAD,0x58,0x82,0xCB,0x11,0x4E,0x9A,0xF8,0x94,0xA6,0xF6,0x6A,0x8E,0x60,0xBC,0x0D,0x5E,0x32,0x6C,0x67,0xB2,0x19,0x91,0x8C,0xBD,0x6C,0xB8,0x5E,0x2A,0xAF,0x68,0x20,0x4B,0xD6,0x3F,0x3E,0x94,0x01,0xF2,0x6B,0x27,0x88,0x33,0x16,0x27,0xB6,0x9B,0x6B,0xA0,0xAF,0xDE,0x3B,0x5A,0xE0,0xDB,0xD4,0x53,0xA9,0x58,0x99,0x43,0x6A,0x33,0x66,0x3F,0xBC,0x68,0x07,0x9A,0xF6,0xAE,0x2F,0xA8,0xBD,0x2E,0x3E,0xA2,0x1E,0x8C,0xF7,0x25,0xAC,0x83,0x5D,0x67,0x23,0x87,0x7D,0xCB,0x71,0xBA,0x9F,0x25,0x1D,0x22,0x4E,0xD7,0x10,0x83
+			0x42,0xB2,0xFD,0x5E,0x50,0x63,0x20,0x7E,0xFA,0x46,0xFE,0x7C,0x50,0x86,0xAA,0xAA,0xA8,0x52,0x26,0x86,0x86,0x50,0xAE,0x03,0x19,0xE9,0x9E,0x46,0x37,0x3F,0x61,0x58,0xF6,0xC9,0x89,0xCF,0xCC,0x00,0x34,0xA8,0xC3,0x3F,0x67,0xBF,0x2C,0x1B,0x1F,0x20,0x1F,0x61,0x6E,0x9D,0xD5,0x96,0x93,0xB7,0x60,0xFA,0xD0,0xF0,0xDF,0x7F,0x7A,0xF2,0x1A,0x47,0x7D,0xA7,0x4D,0xA3,0x28,0xF2,0x6F,0x07,0xF3,0x3D,0x0E,0xFD,0x76,0x4A,0xE3,0x22,0xA0,0x75,0x4A,0x08,0xCB,0xFD,0xAD,0x57,0x4C,0x1C,0x7E,0x89,0xD1,0xC7,0x29,0x31,0x38,0x93,0x45,0x4C,0x51,0xFA,0x32,0x04,0x78,0x56,0xA7,0x7E,0xF5,0xF1,0x09,0xEB,0xE6,0xDA,0x47,0xA1,0x70,0x20,0x6F,0x2D,0x15,0x6B,0x06,0x86,0x7A,0xA6,0xA1,0x51,0x2C,0x4D,0x94,0xEB,0x26,0xB7,0xFB,0x52,0x3D,0x3D,0x81,0xB2,0x59,0xFF,0xD6,0xB7,0xB3,0x39,0xCA,0xAF,0xDB,0xD9,0x6C,0x71,0xB2,0x1E,0x76,0x39,0xBF,0x3B,0x9C,0x5D,0x96,0x59,0x70,0xAF,0x96,0x5C,0x3D,0x5B,0x15,0xFE,0x48,0x14,0x61,0x47,0x80,0x54,0x58,0xA2,0x66,0x1D,0xC2,0xB4,0xAA,0x5F,0x04,0x00,0x0C,0xBC,0x3D,0x16,0xDD,0x92,0x5E,0x84,0x6B,0x5C,0xE2,0x5B,0x0F,0x8A,0xC2,0x41,0x3A,0x38,0x08,0xB8,0x3D,0xB7,0x42,0xB4,0x3F,0xDF,0x89,0x2E,0xA5,0x21,0xFB,0xA5,0x79,0x5A,0xCA,0x06,0xAE,0xC9,0x45,0x3F,0xDC,0x62,0xEB,0xD2,0x41,0x4D,0x8B,0xC0,0x00,0x22,0x59,0xBA,0x10,0x35,0x09,0x5D,0xD3,0xF2,0x69,0x2D,0xE6,0x18,0x2D,0x65,0x50,0x1E,0x82,0xA3
 		};
 		BYTE DataOut[256] = { 0x00 };
 		DWORD DataInLen = sizeof(DataIn);
@@ -1909,6 +2042,58 @@ void WorkerThread(unsigned char cmd)
 		}
 		break;
 	}
+	case 't':
+	{
+		/* 密碼必須是 32Bytes 字串，但加上\0，所以陣列給了33 bytes */
+		BYTE PartitionKey[33] = "AWP20260203DGC08AWP20260203DGC08";
+		unsigned char SerialNumber[256] = { 0x00 };
+		int SerialNumberLen = 0;
+
+		rtn = GetLabelSerialNumber(SerialNumber, &SerialNumberLen);
+		if (rtn != 0) {
+			printf("GetLabelSerialNumber error: %d\n", rtn);
+		}
+
+		printf("PartitonKey Len = %d\n", strlen((const char*)PartitionKey));
+		printf("SerialNumberLen = %d\n", SerialNumberLen);
+
+		BYTE SerialNumberSha256[32] = { 0x0 };
+		SHA256(SerialNumber, SerialNumberLen, SerialNumberSha256);
+
+		BYTE IMKeyEn[256] = { 0x00 };
+		BYTE IMKeyDe[48] = { 0x00 };
+		DWORD IMKeyEnLen = sizeof(IMKeyEn);
+		DWORD IMKeyDeLen = sizeof(IMKeyDe);
+	
+
+		BYTE IV[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+				   0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+		};
+
+
+
+		rtn = Aes256Encrypt(SerialNumberSha256, IV, PartitionKey, strlen((const char *)PartitionKey), IMKeyDe, sizeof(IMKeyDe), &IMKeyDeLen);
+		if (rtn != 0) {
+			printf("Aes256Encrypt failed, rtn  = %d\n", rtn);
+		}
+		
+		rtn = TPMUseKeyEnc(CARDKEYNAME, IMKeyDe, IMKeyDeLen, IMKeyEn, &IMKeyEnLen);
+		if (rtn != 0){
+			printf("TPMUseKeyEnc failed, rtn = %d\n", rtn);
+		}
+
+		printf("IMKeyEnLen = %d\n", IMKeyEnLen);
+		print_hex(IMKeyEn, IMKeyEnLen);
+
+		rtn = WriteToEEProm(IMKeyEn, IMKeyEnLen);
+		if(rtn != 0){
+			printf("WriteToEEProm failed, rtn = %d\n", rtn);
+		}
+
+		printf("Set Enc Partiton key to eeprom Finish\n");
+
+		break;
+	}
 
 	default:
 		Usage();
@@ -1986,6 +2171,9 @@ int main(int argc, char* argv[])
 	}
 	else if (arg1 == "-s") {
 		cmd = 's';
+	}
+	else if (arg1 == "-t") {
+		cmd = 't';
 	}
 	else {
 		Usage();
