@@ -18,6 +18,7 @@
 #include "hasp_api.h"
 #include "qxteeprom.h"
 #include "libqsys.h"
+#include "dllkd.h"
 
 #define TPM_CC_CREATE        0x00000153
 #define TPM_CC_LOAD          0x00000157
@@ -891,14 +892,19 @@ int WriteToFile(const char* filename, unsigned char* buf, int len) {
 	rtn = fwrite(buf, 1, len, fout);
 	if (rtn != len) {
 		printf("Write file error\n");
-		rtn = -1;
+		rtn = -2;
 	}
 	else {
-		printf("Write file OK\n");
+		printf("Write file OK, rtn = %d\n", rtn);
 		rtn = 0;
 	}
 
-	if (fout)	fclose(fout);
+	if (fout) {
+		rtn = fclose(fout);
+		if (rtn != 0) {
+			return -3;
+		}
+	}
 
 	return rtn;
 }
@@ -1387,7 +1393,7 @@ int ReadFromKeypro() {
 	int rtn = 0;
 	hasp_status_t status = HASP_STATUS_OK;
 
-	hasp_feature_t feature_id = 60001;
+	hasp_feature_t feature_id = 0;
 	unsigned char vendor_code[] =
 		"eApZw4pLQubJE71z6zkRH18zzQEebtatmnG4GEgoATapsLUtlFGGeq61r1dQt9BW3jVKSTkr7FhwoiqK"
 		"1D3MvmNxzHLX79ycT/bBk1wd+15On+nXoI9mBvRRo6igEsR7lBzsKywK1O2devo/qnzXr5YH5vDXhoJa"
@@ -1404,7 +1410,7 @@ int ReadFromKeypro() {
 		"2vmr6LFnIveLiYwN71s4Lg==";
 
 	hasp_handle_t handle;
-	unsigned char DataBuf[8] = { 0x00 };
+	unsigned char DataBuf[32] = { 0x00 };
 
 	status = hasp_login(feature_id, vendor_code, &handle);
 	if (status != HASP_STATUS_OK) {
@@ -1412,7 +1418,7 @@ int ReadFromKeypro() {
 		return -1;
 	}
 
-	status = hasp_read(handle, HASP_FILEID_RO, 0, sizeof(DataBuf), DataBuf);
+	status = hasp_read(handle, HASP_FILEID_RO, 32, sizeof(DataBuf), DataBuf);
 	if (status != HASP_STATUS_OK) {
 		printf("hasp_read failed: %d\n", status);
 		return -2;
@@ -1713,6 +1719,9 @@ void Usage(void) {
 	std::cout << "  ImageLoader.exe -r : Get Label Serial Number\n";
 	std::cout << "  ImageLoader.exe -s : Get Screen UUID\n";
 	std::cout << "  ImageLoader.exe -t : EVN Encrpyt Setting\n";
+	std::cout << "  ImageLoader.exe -u : Gen CardKey \n";
+	std::cout << "  ImageLoader.exe -v : Use dllkd get key\n";
+	std::cout << "  ImageLoader.exe -w : Write CardKey Encrypt data\n";
 }
 
 void WorkerThread(unsigned char cmd)
@@ -2095,6 +2104,82 @@ void WorkerThread(unsigned char cmd)
 		break;
 	}
 
+	case 'u':
+	{
+		BYTE Area[32] = {
+			0x50,0x68,0x69,0x6C,0x69,0x70,0x70,0x69,0x6E,0x65,0x73,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+		};
+		BYTE KeyProData[32] = {
+			0xA3,0xF1,0x7C,0x9E,0x4B,0x62,0xD8,0xF1,0x09,0x7E,0x5C,0x3A,0x8D,0x21,0xB6,0xF4,0xC9,0x8E,0x07,0x35,0xAD,0x4F,0x62,0xB1,0xE8,0xC5,0x7A,0x09,0xD3,0xF6,0x14,0x2B
+		};
+		BYTE Key_Plain[32] = {
+			0xac,0x23,0x40,0x15,0x31,0xd0,0x7a,0x92,0x1e,0xd7,0x71,0xc8,0x5f,0x33,0xed,0xd9,0x10,0x01,0xe9,0xaa,0x2c,0xcc,0xe3,0x50,0x82,0x49,0x9d,0x10,0xe1,0xe8,0xee,0x85
+		};
+
+		int AreaLen = sizeof(Area);
+		int KeyProDataLen = sizeof(KeyProData);
+		int Key_PlainLen = sizeof(Key_Plain);
+
+		BYTE Mix[64] = {0x0};
+
+		memcpy(Mix, Area, sizeof(Area));
+		memcpy(Mix+sizeof(Area), KeyProData, sizeof(KeyProData));
+
+		BYTE MixSha256[32] = { 0x0 };
+		SHA256(Mix, sizeof(Mix), MixSha256);
+
+		BYTE IV[16] = { 0x4a,0x78,0x26,0x82,0x23,0xd2,0xe1,0xcb,0x70,0x3a,0x4a,0x8b,0x23,0xa0,0xaf,0x3e };
+
+		BYTE KEY_Encypt[48] = { 0x0 };
+		DWORD KEY_EncyptLen;
+
+
+		rtn = Aes256Encrypt(MixSha256, IV, Key_Plain, sizeof(Key_Plain), KEY_Encypt, sizeof(KEY_Encypt), (DWORD*)&KEY_EncyptLen);
+		if (rtn != 0) {
+			printf("Aes256Encrypt failed, rtn  = %d\n", rtn);
+			exit(1);
+		}
+
+		print_hex(KEY_Encypt, KEY_EncyptLen);
+
+		break;
+	}
+
+	case 'v':
+	{
+		int rtn = 0;
+
+		BYTE Key[32] = { 0x00 };
+		DWORD KeyLen = 0;
+
+		rtn = GetKey(Key, &KeyLen);
+		if (rtn != 0){
+			printf("GetKey failed, rtn = %d\n", rtn);
+			exit(1);
+		}
+
+		print_hex(Key, KeyLen);
+
+
+		break;
+	}
+
+	case 'w': 
+	{
+		BYTE KeyEncryptBuf[48] = {
+			0xdc, 0x36, 0x8a, 0x6c, 0x6b, 0x3c, 0x2f, 0x70, 0x10, 0x0a, 0x99, 0x4a, 0x68, 0xde, 0xd2, 0x76,
+			0xa0, 0x9b, 0x9a, 0xf2, 0x7f, 0x2e, 0x9f, 0x4b, 0x15, 0x17, 0xbb, 0xfb, 0x4e, 0xc9, 0xdc, 0x41,
+			0xc9, 0x23, 0x57, 0x33, 0xfa, 0xce, 0x6c, 0x7c, 0xf8, 0x8c, 0x94, 0x8c, 0x41, 0x21, 0x5a, 0x1d,
+		};
+
+		rtn = WriteToFile(R"(C:\Program Files (x86)\IGS\z.bin)", KeyEncryptBuf, sizeof(KeyEncryptBuf));
+		if (rtn != 0) {
+			printf("WriteToFile failed, rtn = %d\n", rtn);
+			exit(1);
+		}
+
+		break;
+	}
 	default:
 		Usage();
 		break;
@@ -2174,6 +2259,15 @@ int main(int argc, char* argv[])
 	}
 	else if (arg1 == "-t") {
 		cmd = 't';
+	}
+	else if (arg1 == "-u") {
+		cmd = 'u';
+	}
+	else if (arg1 == "-v") {
+		cmd = 'v';
+	}
+	else if (arg1 == "-w") {
+		cmd = 'w';
 	}
 	else {
 		Usage();

@@ -131,11 +131,14 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>C:\Users\stevenko\source\repos\ImageLoader\ImageLoader\libs;C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>qxteeprom.lib;libcrypto.lib;tbs.lib;ncrypt.lib;hasp_windows_x64_114533.lib;qsys.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>dllkd.lib;qxteeprom.lib;libcrypto.lib;tbs.lib;ncrypt.lib;hasp_windows_x64_114533.lib;qsys.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ImageLoader.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dllkd.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
